@@ -8,3 +8,14 @@ infra/.terraform/
 *.tfvars
 *-key.json
 .DS_Store
+.venv/
+__pycache__/
+*.pyc
+.env
+*.joblib
+maint_dbt/target/
+maint_dbt/dbt_packages/
+maint_dbt/logs/
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
