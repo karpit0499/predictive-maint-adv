@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: maintenance
+    database: predictive-maint-adv
+    schema: maintenance
+    tables:
+      - name: predictions
+      - name: drift_log
+
+models:
+  - name: stg_predictions
+    columns:
+      - name: machine_id
+        tests:
+          - not_null
+      - name: risk_bucket
+        tests:
+          - accepted_values:
+              values: ['high', 'medium', 'low']
+
+  - name: mart_fleet_health
+    columns:
+      - name: machine_id
+        tests:
+          - not_null
+          - unique          # exactly one CURRENT risk row per machine

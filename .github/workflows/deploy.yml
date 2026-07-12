@@ -1,0 +1,34 @@
+name: Deploy predictive-maint
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: 'projects/772042279120/locations/global/workloadIdentityPools/github/providers/github-provider'
+          service_account: 'github-deployer@predictive-maint-adv.iam.gserviceaccount.com'
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Rebuild trainer image
+        run: |
+          gcloud builds submit ./training \
+            --tag europe-west3-docker.pkg.dev/predictive-maint-adv/maint/trainer:latest --quiet
+      - name: Deploy scorer
+        run: |
+          gcloud run deploy scorer --source ./scorer --region europe-west3 \
+            --set-env-vars PROJECT=predictive-maint-adv,ENDPOINT_NAME=maint-endpoint \
+            --service-account scorer@predictive-maint-adv.iam.gserviceaccount.com \
+            --no-allow-unauthenticated --quiet
+      - name: Deploy retrainer job
+        run: |
+          gcloud run jobs deploy retrainer --source ./retrainer --region europe-west3 \
+            --set-env-vars PROJECT=predictive-maint-adv,Z_THRESHOLD=1.0 \
+            --service-account vertex-pipeline@predictive-maint-adv.iam.gserviceaccount.com \
+            --quiet

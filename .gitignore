@@ -1,0 +1,10 @@
+.venv/
+.venv-beam/
+__pycache__/
+*.pyc
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*-key.json
+.DS_Store

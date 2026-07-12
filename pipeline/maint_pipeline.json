@@ -1,0 +1,346 @@
+{
+  "components": {
+    "comp-condition-1": {
+      "dag": {
+        "tasks": {
+          "deploy-model": {
+            "cachingOptions": {
+              "enableCache": true
+            },
+            "componentRef": {
+              "name": "comp-deploy-model"
+            },
+            "inputs": {
+              "parameters": {
+                "endpoint_name": {
+                  "componentInputParameter": "pipelinechannel--endpoint_name"
+                },
+                "model_resource": {
+                  "componentInputParameter": "pipelinechannel--train-and-register-Output"
+                },
+                "project": {
+                  "componentInputParameter": "pipelinechannel--project"
+                },
+                "region": {
+                  "componentInputParameter": "pipelinechannel--region"
+                }
+              }
+            },
+            "taskInfo": {
+              "name": "deploy-model"
+            }
+          }
+        }
+      },
+      "inputDefinitions": {
+        "parameters": {
+          "pipelinechannel--endpoint_name": {
+            "parameterType": "STRING"
+          },
+          "pipelinechannel--evaluate-model-Output": {
+            "parameterType": "NUMBER_DOUBLE"
+          },
+          "pipelinechannel--min_auc": {
+            "parameterType": "NUMBER_DOUBLE"
+          },
+          "pipelinechannel--project": {
+            "parameterType": "STRING"
+          },
+          "pipelinechannel--region": {
+            "parameterType": "STRING"
+          },
+          "pipelinechannel--train-and-register-Output": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    },
+    "comp-deploy-model": {
+      "executorLabel": "exec-deploy-model",
+      "inputDefinitions": {
+        "parameters": {
+          "endpoint_name": {
+            "parameterType": "STRING"
+          },
+          "model_resource": {
+            "parameterType": "STRING"
+          },
+          "project": {
+            "parameterType": "STRING"
+          },
+          "region": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    },
+    "comp-evaluate-model": {
+      "executorLabel": "exec-evaluate-model",
+      "inputDefinitions": {
+        "parameters": {
+          "model_resource": {
+            "parameterType": "STRING"
+          },
+          "project": {
+            "parameterType": "STRING"
+          },
+          "region": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "NUMBER_DOUBLE"
+          }
+        }
+      }
+    },
+    "comp-train-and-register": {
+      "executorLabel": "exec-train-and-register",
+      "inputDefinitions": {
+        "parameters": {
+          "pipeline_sa": {
+            "parameterType": "STRING"
+          },
+          "project": {
+            "parameterType": "STRING"
+          },
+          "region": {
+            "parameterType": "STRING"
+          },
+          "serving_image": {
+            "parameterType": "STRING"
+          },
+          "staging_bucket": {
+            "parameterType": "STRING"
+          },
+          "trainer_image": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "parameters": {
+          "Output": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    }
+  },
+  "deploymentSpec": {
+    "executors": {
+      "exec-deploy-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "deploy_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform==1.71.0'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef deploy_model(project: str, region: str, model_resource: str, endpoint_name: str):\n    from google.cloud import aiplatform\n    aiplatform.init(project=project, location=region)\n\n    model = aiplatform.Model(model_resource)\n    endpoints = aiplatform.Endpoint.list(filter=f'display_name=\"{endpoint_name}\"')\n    endpoint = endpoints[0] if endpoints else aiplatform.Endpoint.create(\n        display_name=endpoint_name)\n\n    # Capture what is ALREADY on the endpoint, BEFORE we add to it.\n    previous = [dm.id for dm in endpoint.list_models()]\n    print(\"already deployed:\", previous)\n\n    model.deploy(\n        endpoint=endpoint,\n        machine_type=\"n1-standard-2\",\n        traffic_percentage=100,          # the new model takes ALL traffic...\n        min_replica_count=1,\n        max_replica_count=1,\n    )\n    print(\"deployed:\", model_resource)\n\n    # ...but traffic_percentage=100 only routes 0% of traffic to the OLD models.\n    # It does NOT undeploy them. Each one keeps its own node, and each node keeps\n    # BILLING \u2014 so after five retrains you are quietly paying for five idle\n    # machines serving nobody. Undeploy the superseded ones now.\n    for dm_id in previous:\n        print(\"undeploying superseded model:\", dm_id)\n        endpoint.undeploy(deployed_model_id=dm_id)\n\n"
+          ],
+          "image": "python:3.12-slim"
+        }
+      },
+      "exec-evaluate-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "evaluate_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform==1.71.0' 'google-cloud-storage==2.18.0'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef evaluate_model(project: str, region: str, model_resource: str) -> float:\n    \"\"\"Reads the metrics.json that train.py uploaded next to model.joblib.\"\"\"\n    import json\n    from google.cloud import aiplatform, storage\n    aiplatform.init(project=project, location=region)\n    uri = aiplatform.Model(model_resource).uri              # gs://.../model\n    bucket, prefix = uri[5:].split(\"/\", 1)\n    blob = storage.Client().bucket(bucket).blob(f\"{prefix.rstrip('/')}/metrics.json\")\n    metrics = json.loads(blob.download_as_text())\n    print(\"metrics:\", metrics)\n    return float(metrics[\"auc\"])\n\n"
+          ],
+          "image": "python:3.12-slim"
+        }
+      },
+      "exec-train-and-register": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "train_and_register"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'google-cloud-aiplatform==1.71.0'  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.17.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef train_and_register(project: str, region: str, staging_bucket: str,\n                       trainer_image: str, serving_image: str,\n                       pipeline_sa: str) -> str:\n    from google.cloud import aiplatform\n    aiplatform.init(project=project, location=region,\n                    staging_bucket=staging_bucket)      # REQUIRED for training jobs\n    job = aiplatform.CustomContainerTrainingJob(\n        display_name=\"maint-trainer-pipeline\",\n        container_uri=trainer_image,\n        model_serving_container_image_uri=serving_image,\n    )\n    model = job.run(\n        model_display_name=\"maint-failure\",\n        environment_variables={\"PROJECT\": project},\n        replica_count=1,\n        machine_type=\"n1-standard-4\",\n        service_account=pipeline_sa,\n    )\n    return model.resource_name\n\n"
+          ],
+          "image": "python:3.12-slim"
+        }
+      }
+    }
+  },
+  "pipelineInfo": {
+    "name": "maint-train-deploy"
+  },
+  "root": {
+    "dag": {
+      "tasks": {
+        "condition-1": {
+          "componentRef": {
+            "name": "comp-condition-1"
+          },
+          "dependentTasks": [
+            "evaluate-model",
+            "train-and-register"
+          ],
+          "inputs": {
+            "parameters": {
+              "pipelinechannel--endpoint_name": {
+                "componentInputParameter": "endpoint_name"
+              },
+              "pipelinechannel--evaluate-model-Output": {
+                "taskOutputParameter": {
+                  "outputParameterKey": "Output",
+                  "producerTask": "evaluate-model"
+                }
+              },
+              "pipelinechannel--min_auc": {
+                "componentInputParameter": "min_auc"
+              },
+              "pipelinechannel--project": {
+                "componentInputParameter": "project"
+              },
+              "pipelinechannel--region": {
+                "componentInputParameter": "region"
+              },
+              "pipelinechannel--train-and-register-Output": {
+                "taskOutputParameter": {
+                  "outputParameterKey": "Output",
+                  "producerTask": "train-and-register"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "good-enough"
+          },
+          "triggerPolicy": {
+            "condition": "inputs.parameter_values['pipelinechannel--evaluate-model-Output'] >= inputs.parameter_values['pipelinechannel--min_auc']"
+          }
+        },
+        "evaluate-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-evaluate-model"
+          },
+          "dependentTasks": [
+            "train-and-register"
+          ],
+          "inputs": {
+            "parameters": {
+              "model_resource": {
+                "taskOutputParameter": {
+                  "outputParameterKey": "Output",
+                  "producerTask": "train-and-register"
+                }
+              },
+              "project": {
+                "componentInputParameter": "project"
+              },
+              "region": {
+                "componentInputParameter": "region"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "evaluate-model"
+          }
+        },
+        "train-and-register": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-train-and-register"
+          },
+          "inputs": {
+            "parameters": {
+              "pipeline_sa": {
+                "componentInputParameter": "pipeline_sa"
+              },
+              "project": {
+                "componentInputParameter": "project"
+              },
+              "region": {
+                "componentInputParameter": "region"
+              },
+              "serving_image": {
+                "componentInputParameter": "serving_image"
+              },
+              "staging_bucket": {
+                "componentInputParameter": "staging_bucket"
+              },
+              "trainer_image": {
+                "componentInputParameter": "trainer_image"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "train-and-register"
+          }
+        }
+      }
+    },
+    "inputDefinitions": {
+      "parameters": {
+        "endpoint_name": {
+          "defaultValue": "maint-endpoint",
+          "isOptional": true,
+          "parameterType": "STRING"
+        },
+        "min_auc": {
+          "defaultValue": 0.8,
+          "isOptional": true,
+          "parameterType": "NUMBER_DOUBLE"
+        },
+        "pipeline_sa": {
+          "parameterType": "STRING"
+        },
+        "project": {
+          "parameterType": "STRING"
+        },
+        "region": {
+          "parameterType": "STRING"
+        },
+        "serving_image": {
+          "parameterType": "STRING"
+        },
+        "staging_bucket": {
+          "parameterType": "STRING"
+        },
+        "trainer_image": {
+          "parameterType": "STRING"
+        }
+      }
+    }
+  },
+  "schemaVersion": "2.1.0",
+  "sdkVersion": "kfp-2.17.0"
+}
